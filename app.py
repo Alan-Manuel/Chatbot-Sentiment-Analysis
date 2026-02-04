@@ -4,10 +4,11 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Review Analyzer", layout="wide")
 st.title("Review Analyzer 📝")
-st.caption("Upload your reviews CSV → get a quick, interpretable analysis (no API keys).")
+st.caption("Upload your reviews CSV → get a quick, interpretable analysis + trend charts (no API keys).")
 
 # --- Your CSV expected columns ---
 # review text: content
@@ -42,7 +43,7 @@ def top_terms(text_series: pd.Series, n=15):
     return c.most_common(n)
 
 def safe_parse_datetime(series: pd.Series) -> pd.Series:
-    # Your `at` column typically looks ISO-ish; coerce errors safely
+    # Your `at` column is typically ISO-ish; coerce errors safely
     return pd.to_datetime(series, errors="coerce", utc=True)
 
 uploaded = st.file_uploader("Upload your CSV", type=["csv"])
@@ -104,7 +105,6 @@ with st.sidebar:
         st.caption("No `reviewCreatedVersion` column found.")
 
     if has_date:
-        # date slider using parsed dates
         dmin = df["at_parsed"].min()
         dmax = df["at_parsed"].max()
         if pd.notna(dmin) and pd.notna(dmax):
@@ -129,7 +129,6 @@ if has_version and version_filter != "ALL":
     fdf = fdf[fdf["reviewCreatedVersion"].astype(str) == str(version_filter)]
 
 if has_date and start_date and end_date:
-    # filter on parsed UTC datetime
     fdf = fdf[
         (fdf["at_parsed"].notna()) &
         (fdf["at_parsed"].dt.date >= start_date) &
@@ -178,8 +177,141 @@ st.markdown(
     f"- **Overall:** {tone}\n"
     f"- **Scores:** {rating_take}\n"
     f"- **Split:** {pos_pct:.1f}% positive, {neu_pct:.1f}% neutral, {neg_pct:.1f}% negative\n"
-    f"- **Suggested next step:** Inspect the top negative terms and sample low-score reviews below."
+    f"- **Suggested next step:** Inspect the trend charts + top negative terms and sample low-score reviews below."
 )
+
+st.divider()
+
+# ==========================================================
+# ✅ TRENDS + VERSION CHARTS (your snippet, integrated + fixed)
+# ==========================================================
+st.subheader("Trends")
+
+if not has_date or fdf["at_parsed"].isna().all():
+    st.info("Trend charts need the `at` column with parseable dates.")
+else:
+    gran = st.radio("Trend granularity", ["Daily", "Weekly", "Monthly"], horizontal=True)
+
+    tdf = fdf[fdf["at_parsed"].notna()].copy()
+    tdf = tdf.sort_values("at_parsed")
+
+    if gran == "Daily":
+        tdf["period"] = tdf["at_parsed"].dt.to_period("D").dt.to_timestamp()
+    elif gran == "Weekly":
+        tdf["period"] = tdf["at_parsed"].dt.to_period("W-MON").dt.start_time
+    else:
+        tdf["period"] = tdf["at_parsed"].dt.to_period("M").dt.to_timestamp()
+
+    # 1) Review volume over time
+    vol = tdf.groupby("period").size().rename("reviews").reset_index()
+
+    fig1, ax1 = plt.subplots()
+    ax1.plot(vol["period"], vol["reviews"])
+    ax1.set_title("Review Volume Over Time")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Number of reviews")
+    ax1.tick_params(axis="x", rotation=30)
+    st.pyplot(fig1, clear_figure=True)
+
+    # 2) Average rating over time
+    avg = tdf.groupby("period")["score"].mean().rename("avg_score").reset_index()
+
+    fig2, ax2 = plt.subplots()
+    ax2.plot(avg["period"], avg["avg_score"])
+    ax2.set_title("Average Rating Over Time")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Average score")
+    ax2.set_ylim(0, 5)
+    ax2.tick_params(axis="x", rotation=30)
+    st.pyplot(fig2, clear_figure=True)
+
+    # 3) Sentiment share over time (stacked area)
+    sent = (
+        tdf.groupby(["period", "sentiment"])
+        .size()
+        .rename("count")
+        .reset_index()
+    )
+    pivot = sent.pivot(index="period", columns="sentiment", values="count").fillna(0)
+
+    for col in ["negative", "neutral", "positive"]:
+        if col not in pivot.columns:
+            pivot[col] = 0
+    pivot = pivot[["negative", "neutral", "positive"]]
+
+    share = pivot.div(pivot.sum(axis=1), axis=0).fillna(0)
+
+    fig3, ax3 = plt.subplots()
+    ax3.stackplot(
+        share.index,
+        share["negative"],
+        share["neutral"],
+        share["positive"],
+        labels=["negative", "neutral", "positive"],
+    )
+    ax3.set_title("Sentiment Share Over Time")
+    ax3.set_xlabel("Date")
+    ax3.set_ylabel("Share of reviews")
+    ax3.set_ylim(0, 1)
+    ax3.tick_params(axis="x", rotation=30)
+    ax3.legend(loc="upper left")
+    st.pyplot(fig3, clear_figure=True)
+
+    st.divider()
+
+# 4) Version comparison charts
+if has_version and fdf["reviewCreatedVersion"].astype(str).str.strip().ne("").any():
+    st.subheader("Version Comparison")
+
+    vdf = fdf.copy()
+    vdf["reviewCreatedVersion"] = vdf["reviewCreatedVersion"].astype(str).str.strip()
+    vdf = vdf[vdf["reviewCreatedVersion"].ne("")]
+
+    # Aggregate
+    v_agg = (
+        vdf.groupby("reviewCreatedVersion")
+        .agg(
+            reviews=("reviewCreatedVersion", "size"),
+            avg_score=("score", "mean"),
+            neg_share=("sentiment", lambda s: (s == "negative").mean())
+        )
+        .reset_index()
+    )
+
+    top_n = st.slider("Show top N versions (by review count)", 5, 30, 10)
+    v_agg = v_agg.sort_values("reviews", ascending=False).head(top_n)
+    v_agg = v_agg.sort_values("reviewCreatedVersion")
+
+    # Bar: avg score by version
+    fig4, ax4 = plt.subplots()
+    ax4.bar(v_agg["reviewCreatedVersion"], v_agg["avg_score"])
+    ax4.set_title("Average Rating by Version")
+    ax4.set_xlabel("Version")
+    ax4.set_ylabel("Average score")
+    ax4.set_ylim(0, 5)
+    ax4.tick_params(axis="x", rotation=30)
+    st.pyplot(fig4, clear_figure=True)
+
+    # Bar: review volume by version
+    fig5, ax5 = plt.subplots()
+    ax5.bar(v_agg["reviewCreatedVersion"], v_agg["reviews"])
+    ax5.set_title("Review Volume by Version")
+    ax5.set_xlabel("Version")
+    ax5.set_ylabel("Number of reviews")
+    ax5.tick_params(axis="x", rotation=30)
+    st.pyplot(fig5, clear_figure=True)
+
+    # Bar: negative share by version
+    fig6, ax6 = plt.subplots()
+    ax6.bar(v_agg["reviewCreatedVersion"], v_agg["neg_share"])
+    ax6.set_title("Negative Share by Version")
+    ax6.set_xlabel("Version")
+    ax6.set_ylabel("Negative share")
+    ax6.set_ylim(0, 1)
+    ax6.tick_params(axis="x", rotation=30)
+    st.pyplot(fig6, clear_figure=True)
+else:
+    st.caption("No usable `reviewCreatedVersion` values found for version charts.")
 
 st.divider()
 
