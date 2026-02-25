@@ -5,7 +5,9 @@ from typing import Optional, Tuple, Dict, Any, List
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
+
+import plotly.graph_objects as go
+import plotly.express as px
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
@@ -16,7 +18,7 @@ from sklearn.decomposition import NMF
 # ==========================================================
 st.set_page_config(page_title="Review Analyzer Chatbot", layout="wide")
 st.title("Review Analyzer 📝🤖")
-st.caption("Upload your reviews CSV → instructions + dashboard + chat (no API keys).")
+st.caption("Kaggle reviews CSV → landing instructions + dashboard + chat (no API keys).")
 
 
 # ==========================================================
@@ -68,7 +70,7 @@ def clamp_int(x, lo, hi):
 # ==========================================================
 # Upload + Load
 # ==========================================================
-uploaded = st.file_uploader("Upload your CSV", type=["csv"])
+uploaded = st.file_uploader("Upload your Kaggle reviews CSV", type=["csv"])
 if not uploaded:
     st.info("Upload your reviews CSV to get started.")
     st.stop()
@@ -95,6 +97,7 @@ df = df[df["content"].ne("")].copy()
 
 df["sentiment"] = df["score"].apply(rating_to_sentiment)
 
+# Kaggle dataset usually has these columns:
 has_date = "at" in df.columns
 if has_date:
     df["at_parsed"] = safe_parse_datetime(df["at"])
@@ -105,7 +108,7 @@ has_thumbs = "thumbsUpCount" in df.columns
 
 
 # ==========================================================
-# Sidebar: Filters + Threshold Controls (makes charts intuitive)
+# Sidebar: Filters + Threshold Controls (more intuitive charts)
 # ==========================================================
 with st.sidebar:
     st.header("Filters")
@@ -114,8 +117,8 @@ with st.sidebar:
     sentiment_filter = st.selectbox("Sentiment", sentiment_opt)
 
     if has_version:
-        vers = df["reviewCreatedVersion"].fillna("").astype(str)
-        version_opt = ["ALL"] + sorted([v for v in vers.unique().tolist() if v.strip() != ""])
+        vers = df["reviewCreatedVersion"].fillna("").astype(str).str.strip()
+        version_opt = ["ALL"] + sorted([v for v in vers.unique().tolist() if v != ""])
         version_filter = st.selectbox("Version", version_opt)
     else:
         version_filter = "ALL"
@@ -125,7 +128,10 @@ with st.sidebar:
         dmin = df["at_parsed"].min()
         dmax = df["at_parsed"].max()
         if pd.notna(dmin) and pd.notna(dmax):
-            start_date, end_date = st.date_input("Date range (UTC)", value=(dmin.date(), dmax.date()))
+            start_date, end_date = st.date_input(
+                "Date range (UTC)",
+                value=(dmin.date(), dmax.date())
+            )
         else:
             start_date, end_date = None, None
             st.caption("Could not parse `at` dates.")
@@ -134,25 +140,26 @@ with st.sidebar:
         st.caption("No `at` column found (trend charts disabled).")
 
     st.divider()
-    st.header("Thresholds (for readability)")
+    st.header("Thresholds")
 
-    # User-controlled thresholds
-    thr_healthy = st.slider("Healthy score threshold", 3.0, 5.0, 4.0, 0.1)
-    thr_watch = st.slider("Watchlist score threshold", 1.0, 4.5, 3.0, 0.1)
-    thr_neg_share = st.slider("Negative share threshold", 0.10, 0.80, 0.35, 0.05)
+    thr_healthy = st.slider("Healthy avg score ≥", 3.0, 5.0, 4.0, 0.1)
+    thr_watch = st.slider("Watchlist avg score ≤", 1.0, 4.5, 3.0, 0.1)
+    thr_neg_share = st.slider("Alert if negative share >", 0.10, 0.80, 0.35, 0.05)
 
     z_window = st.slider("Anomaly window (periods)", 4, 16, 6, 1)
     z_cutoff = st.slider("Anomaly sensitivity (z)", 1.5, 4.0, 2.5, 0.1)
 
 
+# ==========================================================
 # Apply filters
+# ==========================================================
 fdf = df.copy()
 
 if sentiment_filter != "ALL":
     fdf = fdf[fdf["sentiment"] == sentiment_filter]
 
 if has_version and version_filter != "ALL":
-    fdf = fdf[fdf["reviewCreatedVersion"].astype(str) == str(version_filter)]
+    fdf = fdf[fdf["reviewCreatedVersion"].astype(str).str.strip() == str(version_filter)]
 
 if has_date and start_date and end_date:
     fdf = fdf[
@@ -161,8 +168,7 @@ if has_date and start_date and end_date:
         (fdf["at_parsed"].dt.date <= end_date)
     ]
 
-total = len(fdf)
-if total == 0:
+if len(fdf) == 0:
     st.warning("No rows match your filters. Try widening the filters.")
     st.stop()
 
@@ -170,15 +176,14 @@ if total == 0:
 # ==========================================================
 # Core metrics (always visible)
 # ==========================================================
+total = len(fdf)
 avg_rating = float(fdf["score"].mean())
 sent_counts = fdf["sentiment"].value_counts().to_dict()
 neg = int(sent_counts.get("negative", 0))
 neu = int(sent_counts.get("neutral", 0))
 pos = int(sent_counts.get("positive", 0))
 
-neg_pct = (neg / total) * 100
-pos_pct = (pos / total) * 100
-neu_pct = (neu / total) * 100
+neg_share_overall = neg / total if total else 0.0
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Reviews (filtered)", f"{total:,}")
@@ -186,17 +191,17 @@ c2.metric("Avg score", f"{avg_rating:.2f}")
 c3.metric("Negative", f"{neg:,}")
 c4.metric("Positive", f"{pos:,}")
 
-# A simple “status badge” based on thresholds (feels intuitive)
-if avg_rating >= thr_healthy and (neg / total) <= thr_neg_share:
+# Status badge (intuitive)
+if avg_rating >= thr_healthy and neg_share_overall <= thr_neg_share:
     st.success("Status: Healthy ✅ (based on your thresholds)")
-elif avg_rating <= thr_watch or (neg / total) >= thr_neg_share:
+elif avg_rating <= thr_watch or neg_share_overall >= thr_neg_share:
     st.warning("Status: Watchlist ⚠️ (based on your thresholds)")
 else:
     st.info("Status: Mixed / Monitor ℹ️ (based on your thresholds)")
 
 
 # ==========================================================
-# Trends helpers
+# Trends + Flags helpers
 # ==========================================================
 def build_trends(_df: pd.DataFrame, gran: str) -> Optional[Dict[str, pd.DataFrame]]:
     if "at_parsed" not in _df.columns or _df["at_parsed"].isna().all():
@@ -225,9 +230,9 @@ def build_trends(_df: pd.DataFrame, gran: str) -> Optional[Dict[str, pd.DataFram
         if col not in pivot.columns:
             pivot[col] = 0
     pivot = pivot[["negative", "neutral", "positive"]]
-
     share = pivot.div(pivot.sum(axis=1), axis=0).fillna(0).reset_index()
-    return {"vol": vol, "avg": avg, "share": share, "tdf": tdf}
+
+    return {"tdf": tdf, "vol": vol, "avg": avg, "share": share}
 
 def rolling_z_flags(series: pd.Series, window: int, z: float) -> pd.Series:
     if len(series) < max(8, window + 2):
@@ -236,6 +241,49 @@ def rolling_z_flags(series: pd.Series, window: int, z: float) -> pd.Series:
     roll_std = series.rolling(window, min_periods=window).std().replace(0, np.nan)
     zscore = (series - roll_mean) / roll_std
     return zscore.abs().fillna(0) >= z
+
+def make_trend_figs(tr: Dict[str, pd.DataFrame], title_prefix: str = "") -> Dict[str, Any]:
+    vol = tr["vol"]
+    avg = tr["avg"]
+    share = tr["share"].set_index("period")
+
+    # Volume
+    fig_vol = px.line(vol, x="period", y="reviews", title=f"{title_prefix}Review Volume Over Time")
+    fig_vol.update_layout(xaxis_title="Date", yaxis_title="Reviews")
+
+    # Avg rating + threshold lines
+    fig_avg = px.line(avg, x="period", y="avg_score", title=f"{title_prefix}Average Rating Over Time")
+    fig_avg.update_layout(xaxis_title="Date", yaxis_title="Avg score", yaxis_range=[0, 5])
+    fig_avg.add_hline(y=thr_healthy, line_dash="dash", annotation_text=f"Healthy ≥ {thr_healthy:.1f}")
+    fig_avg.add_hline(y=thr_watch, line_dash="dash", annotation_text=f"Watch ≤ {thr_watch:.1f}")
+
+    # Negative share line (more readable than stacked share for “alerts”)
+    neg_line = share["negative"].reset_index().rename(columns={"negative": "neg_share"})
+    fig_neg = px.line(neg_line, x="period", y="neg_share", title=f"{title_prefix}Negative Share Over Time")
+    fig_neg.update_layout(xaxis_title="Date", yaxis_title="Negative share", yaxis_range=[0, 1])
+    fig_neg.add_hline(y=thr_neg_share, line_dash="dash", annotation_text=f"Alert > {thr_neg_share:.2f}")
+
+    # Flags table
+    avg_series = avg.set_index("period")["avg_score"].reindex(share.index).ffill().bfill()
+    neg_share = share["negative"].copy()
+    vol_series = vol.set_index("period")["reviews"].reindex(share.index).fillna(0)
+
+    flag_thresh = (avg_series <= (thr_watch + 0.5)) | (neg_share >= thr_neg_share)
+    flag_anom_vol = rolling_z_flags(vol_series, window=z_window, z=z_cutoff)
+    flag_anom_neg = rolling_z_flags(neg_share, window=z_window, z=z_cutoff)
+
+    flagged = pd.DataFrame({
+        "period": share.index,
+        "avg_score": avg_series.values,
+        "neg_share": neg_share.values,
+        "reviews": vol_series.values,
+        "flag_threshold": flag_thresh.values,
+        "flag_anom_volume": flag_anom_vol.values,
+        "flag_anom_neg_share": flag_anom_neg.values,
+    })
+    flagged["any_flag"] = flagged[["flag_threshold","flag_anom_volume","flag_anom_neg_share"]].any(axis=1)
+
+    return {"fig_vol": fig_vol, "fig_avg": fig_avg, "fig_neg": fig_neg, "flagged": flagged}
 
 
 # ==========================================================
@@ -272,66 +320,73 @@ tab_home, tab_chat, tab_dash = st.tabs(["🏠 Home", "💬 Chat", "📊 Dashboar
 
 
 # ==========================================================
-# HOME TAB (landing page)
+# HOME TAB (landing instructions)
 # ==========================================================
 with tab_home:
     st.subheader("Welcome 👋")
     st.markdown(
         """
-This app helps you quickly understand review sentiment and *chat* with your dataset using explainable logic.
+This app helps you understand Kaggle review sentiment **and** chat with your dataset.
 
 ### What you can do
-- **Dashboard:** trends, thresholds, flagged periods, version comparisons, top terms, topic modeling.
-- **Chat:** ask questions and get answers grounded in the filtered data.
+- **Dashboard:** interactive charts + thresholds + flagged periods + versions + themes.
+- **Chat:** type questions like a chatbot and get answers grounded in the filtered data.
 
-### Expected columns
-- Required: `content`, `score`
-- Optional: `at`, `reviewCreatedVersion`, `thumbsUpCount`
+### Expected CSV columns (Kaggle format works)
+Required:
+- `content` (review text)
+- `score` (1–5)
 
-➡️ Next: go to **Chat** tab and try “Give me a summary”.
-        """
+Optional:
+- `at` (enables trends + flags)
+- `reviewCreatedVersion` (version comparisons)
+- `thumbsUpCount` (most helpful reviews)
+
+### Try these prompts
+"""
     )
-
-    st.markdown("### Quick prompts")
     st.code(
         "Give me a summary\n"
         "What's driving negative reviews?\n"
-        "Negative themes\n"
+        "Trend weekly\n"
         "Trend monthly\n"
         "Show flagged periods\n"
+        "Compare versions\n"
         "Show worst reviews",
         language="text"
     )
 
 
 # ==========================================================
-# CHAT TAB (conversational layer)
+# CHAT TAB (conversation + charts in chat)
 # ==========================================================
 with tab_chat:
     st.subheader("Chat with your dataset 🤖")
-    st.caption("This is rule-based + retrieval (no API keys). Answers are computed from your filtered data.")
+    st.caption("Type anything. The assistant can also render charts/tables in-chat.")
 
-    # Quick prompt buttons to make it feel like a “chatbot”
-    p1, p2, p3, p4, p5 = st.columns(5)
-    if p1.button("Summary"):
+    # Quick prompt buttons
+    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
+    if b1.button("Summary"):
         st.session_state["_quick_prompt"] = "Give me a summary"
-    if p2.button("Drivers"):
+    if b2.button("Drivers"):
         st.session_state["_quick_prompt"] = "What's driving negative reviews?"
-    if p3.button("Themes"):
-        st.session_state["_quick_prompt"] = "Negative themes"
-    if p4.button("Trend"):
+    if b3.button("Trend (W)"):
+        st.session_state["_quick_prompt"] = "Trend weekly"
+    if b4.button("Trend (M)"):
         st.session_state["_quick_prompt"] = "Trend monthly"
-    if p5.button("Flags"):
+    if b5.button("Flags"):
         st.session_state["_quick_prompt"] = "Show flagged periods"
+    if b6.button("Versions"):
+        st.session_state["_quick_prompt"] = "Compare versions"
+    if b7.button("Worst"):
+        st.session_state["_quick_prompt"] = "Show worst reviews"
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": "Hey! Upload your CSV and set filters in the sidebar. Ask me about sentiment, trends, versions, themes, or examples."
-            }
+            {"role": "assistant", "content": "Hey! Ask me about sentiment, trends, flagged periods, versions, themes, or examples."}
         ]
 
+    # Render prior messages
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
@@ -342,11 +397,11 @@ with tab_chat:
             return "summary"
         if any(k in ql for k in ["why", "drivers", "reason", "cause", "complaint", "issues", "problem"]):
             return "drivers_negative"
-        if any(k in ql for k in ["topic", "themes", "theme", "cluster"]):
+        if any(k in ql for k in ["topic", "themes", "theme", "clusters"]):
             return "themes"
         if any(k in ql for k in ["trend", "over time", "monthly", "weekly", "daily"]):
             return "trend"
-        if any(k in ql for k in ["flag", "spike", "anomaly", "alert"]):
+        if any(k in ql for k in ["flag", "flags", "spike", "anomaly", "alert"]):
             return "flags"
         if any(k in ql for k in ["version", "release", "compare", "vs"]):
             return "version"
@@ -360,217 +415,219 @@ with tab_chat:
             return "Daily"
         if "weekly" in ql:
             return "Weekly"
-        if "monthly" in ql:
-            return "Monthly"
         return "Monthly"
 
-    def chatbot_answer(q: str, fdf_local: pd.DataFrame) -> str:
+    def chatbot_answer_and_artifacts(q: str, fdf_local: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Returns a dict:
+          - text: str
+          - figs: list[plotly_fig]
+          - tables: list[pd.DataFrame]
+        """
         intent = detect_intent(q)
         total_local = len(fdf_local)
+        if total_local == 0:
+            return {"text": "No reviews match the current filters.", "figs": [], "tables": []}
 
         neg_local = int((fdf_local["sentiment"] == "negative").sum())
         neu_local = int((fdf_local["sentiment"] == "neutral").sum())
         pos_local = int((fdf_local["sentiment"] == "positive").sum())
         avg_local = float(fdf_local["score"].mean())
+        neg_share_local = neg_local / total_local
 
         if intent == "summary":
-            return (
-                f"Snapshot (current filters):\n\n"
+            text = (
+                f"**Snapshot (current filters)**\n\n"
                 f"- Reviews: **{total_local:,}**\n"
                 f"- Avg score: **{avg_local:.2f}/5**\n"
                 f"- Split: **{(pos_local/total_local)*100:.1f}% positive**, "
                 f"**{(neu_local/total_local)*100:.1f}% neutral**, "
                 f"**{(neg_local/total_local)*100:.1f}% negative**\n\n"
-                f"Thresholds: Healthy ≥ **{thr_healthy:.1f}**, Watch ≤ **{thr_watch:.1f}**, Neg share > **{thr_neg_share:.2f}** triggers alerts."
+                f"**Your thresholds:** Healthy ≥ **{thr_healthy:.1f}**, Watch ≤ **{thr_watch:.1f}**, "
+                f"Alert if negative share > **{thr_neg_share:.2f}**."
             )
+            return {"text": text, "figs": [], "tables": []}
 
         if intent == "drivers_negative":
             neg_df_local = fdf_local[fdf_local["sentiment"] == "negative"]
             if len(neg_df_local) < 10:
-                return "Not enough negative reviews in the filtered set to identify stable drivers. Widen filters."
-            terms = top_terms(neg_df_local["content"], n=8)
-            top_list = ", ".join([f"`{t}`" for t, _ in terms[:6]])
-            return f"Most common terms in negative reviews: {top_list}.\n\nAsk **'Negative themes'** for clustered topics."
+                return {"text": "Not enough negative reviews to find stable drivers. Widen filters.", "figs": [], "tables": []}
+            terms = top_terms(neg_df_local["content"], n=12)
+            top_list = ", ".join([f"`{t}`" for t, _ in terms[:8]])
+            text = (
+                f"Top recurring terms in negative reviews: {top_list}\n\n"
+                f"Try: **Negative themes** (to cluster), or **Show worst reviews** (examples)."
+            )
+            return {"text": text, "figs": [], "tables": []}
 
         if intent == "themes":
             neg_df_local = fdf_local[fdf_local["sentiment"] == "negative"]
             if len(neg_df_local) < 30:
-                return "Not enough negative reviews for stable topic modeling (need ~30+). Widen filters."
+                return {"text": "Not enough negative reviews for stable topics (need ~30+). Widen filters.", "figs": [], "tables": []}
             topics = nmf_topics(neg_df_local["content"].astype(str).tolist(), n_topics=5, n_terms=6)
             if not topics:
-                return "Could not generate themes (text too sparse). Widen filters."
+                return {"text": "Could not generate themes (text too sparse). Widen filters.", "figs": [], "tables": []}
             lines = [f"- **Topic {t['topic']}**: " + ", ".join([f"`{x}`" for x in t["terms"]]) for t in topics]
-            return "Negative themes:\n\n" + "\n".join(lines)
+            return {"text": "**Negative themes:**\n\n" + "\n".join(lines), "figs": [], "tables": []}
 
         if intent == "trend":
+            if "at_parsed" not in fdf_local.columns or fdf_local["at_parsed"].isna().all():
+                return {"text": "Trend requires a usable `at` column (parseable dates).", "figs": [], "tables": []}
             gran = extract_granularity(q)
             tr = build_trends(fdf_local, gran)
-            if tr is None:
-                return "Trend requires an `at` column with parseable dates."
+            figs = []
+            tables = []
+            pack = make_trend_figs(tr, title_prefix=f"({gran}) ")
+            figs.extend([pack["fig_vol"], pack["fig_avg"], pack["fig_neg"]])
+
+            # quick read
             avg_df = tr["avg"]
             share_df = tr["share"].set_index("period")
             last_avg = float(avg_df["avg_score"].iloc[-1]) if len(avg_df) else avg_local
-            last_neg = float(share_df["negative"].iloc[-1]) if len(share_df) else (neg_local / total_local)
-            return (
-                f"Trend ({gran}) latest:\n\n"
-                f"- Avg score: **{last_avg:.2f}**\n"
-                f"- Negative share: **{last_neg*100:.1f}%**\n\n"
-                "Go to **Dashboard** tab to see the charts and the flagged periods table."
+            last_neg = float(share_df["negative"].iloc[-1]) if len(share_df) else neg_share_local
+
+            text = (
+                f"**Trend ({gran})**\n\n"
+                f"- Latest avg score: **{last_avg:.2f}**\n"
+                f"- Latest negative share: **{last_neg*100:.1f}%**\n\n"
+                f"I rendered the charts below with your thresholds."
             )
+            return {"text": text, "figs": figs, "tables": []}
 
         if intent == "flags":
+            if "at_parsed" not in fdf_local.columns or fdf_local["at_parsed"].isna().all():
+                return {"text": "Flags require a usable `at` column (parseable dates).", "figs": [], "tables": []}
             tr = build_trends(fdf_local, "Weekly")
-            if tr is None:
-                return "Flags require an `at` column with parseable dates."
-            share = tr["share"].set_index("period")
-            avg_df = tr["avg"].set_index("period")
-            avg_series = avg_df["avg_score"].reindex(share.index).ffill().bfill()
-            neg_share = share["negative"]
+            pack = make_trend_figs(tr, title_prefix="(Weekly) ")
+            flagged = pack["flagged"]
+            flagged_show = flagged[flagged["any_flag"]].sort_values("period", ascending=False).head(30)
 
-            flag_thresh = (avg_series < (thr_watch + 0.5)) | (neg_share > thr_neg_share)
-            flagged_periods = share.index[flag_thresh].tolist()[-8:]
-            if not flagged_periods:
-                return "No flagged weekly periods found using your current thresholds."
-            formatted = ", ".join([str(p.date()) if hasattr(p, "date") else str(p) for p in flagged_periods])
-            return f"Recent flagged weekly periods: {formatted}\n\nSee **Dashboard → Flagged periods** for full details."
-
-        if intent == "samples":
-            low = fdf_local.sort_values("score").head(5)
-            examples = "\n".join([f"- ({int(r.score)}/5) {str(r.content)[:160]}..." for r in low.itertuples()])
-            return f"Low-score examples (trimmed):\n\n{examples}"
+            text = (
+                "Here are **recent flagged weekly periods** (thresholds + anomaly detection). "
+                "Use this as your quick triage list."
+            )
+            return {"text": text, "figs": [pack["fig_avg"], pack["fig_neg"]], "tables": [flagged_show]}
 
         if intent == "version":
             if "reviewCreatedVersion" not in fdf_local.columns or fdf_local["reviewCreatedVersion"].astype(str).str.strip().eq("").all():
-                return "No version column found (`reviewCreatedVersion`)."
-            top_versions = (
-                fdf_local["reviewCreatedVersion"].astype(str).str.strip().replace("", np.nan).dropna()
-                .value_counts().head(5).index.tolist()
+                return {"text": "No usable `reviewCreatedVersion` values found to compare versions.", "figs": [], "tables": []}
+
+            vdf = fdf_local.copy()
+            vdf["reviewCreatedVersion"] = vdf["reviewCreatedVersion"].astype(str).str.strip()
+            vdf = vdf[vdf["reviewCreatedVersion"].ne("")]
+
+            v_agg = (
+                vdf.groupby("reviewCreatedVersion")
+                .agg(
+                    reviews=("reviewCreatedVersion", "size"),
+                    avg_score=("score", "mean"),
+                    neg_share=("sentiment", lambda s: (s == "negative").mean())
+                )
+                .reset_index()
+                .sort_values("reviews", ascending=False)
+                .head(12)
+                .sort_values("reviewCreatedVersion")
             )
-            return "Top versions in current filters: " + ", ".join([f"`{v}`" for v in top_versions])
 
-        return (
-            "Try:\n"
-            "- Give me a summary\n"
-            "- What's driving negative reviews?\n"
-            "- Negative themes\n"
-            "- Trend monthly\n"
-            "- Show flagged periods\n"
-            "- Show worst reviews"
-        )
+            fig_avg_v = px.bar(v_agg, x="reviewCreatedVersion", y="avg_score", title="Average Rating by Version")
+            fig_avg_v.update_layout(xaxis_title="Version", yaxis_title="Avg score", yaxis_range=[0, 5])
+            fig_avg_v.add_hline(y=thr_healthy, line_dash="dash", annotation_text=f"Healthy ≥ {thr_healthy:.1f}")
+            fig_avg_v.add_hline(y=thr_watch, line_dash="dash", annotation_text=f"Watch ≤ {thr_watch:.1f}")
 
-    # Allow quick prompt injection
-    default_prompt = st.session_state.pop("_quick_prompt", None)
-    user_q = st.chat_input("Ask something…") if default_prompt is None else default_prompt
+            fig_neg_v = px.bar(v_agg, x="reviewCreatedVersion", y="neg_share", title="Negative Share by Version")
+            fig_neg_v.update_layout(xaxis_title="Version", yaxis_title="Negative share", yaxis_range=[0, 1])
+            fig_neg_v.add_hline(y=thr_neg_share, line_dash="dash", annotation_text=f"Alert > {thr_neg_share:.2f}")
+
+            text = "Here’s a **version comparison** (top versions by review volume in current filters)."
+            return {"text": text, "figs": [fig_avg_v, fig_neg_v], "tables": [v_agg]}
+
+        if intent == "samples":
+            low = fdf_local.sort_values("score").head(10)
+            show_cols = ["score", "sentiment", "content"]
+            if "reviewCreatedVersion" in fdf_local.columns:
+                show_cols.insert(0, "reviewCreatedVersion")
+            if "date" in fdf_local.columns:
+                show_cols.insert(0, "date")
+
+            text = "Here are **low-score review samples** (trimmed for quick triage)."
+            return {"text": text, "figs": [], "tables": [low[show_cols]]}
+
+        return {
+            "text": (
+                "Try:\n"
+                "- Give me a summary\n"
+                "- What's driving negative reviews?\n"
+                "- Trend weekly / Trend monthly\n"
+                "- Show flagged periods\n"
+                "- Compare versions\n"
+                "- Show worst reviews"
+            ),
+            "figs": [],
+            "tables": []
+        }
+
+    # Always keep a real text input
+    user_q = st.chat_input("Ask something… (e.g., 'Trend weekly', 'Show flagged periods', 'Compare versions')")
+
+    # Quick prompt injection
+    quick = st.session_state.pop("_quick_prompt", None)
+    if quick:
+        user_q = quick
 
     if user_q:
         st.session_state.messages.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
 
-        ans = chatbot_answer(user_q, fdf)
-        st.session_state.messages.append({"role": "assistant", "content": ans})
+        out = chatbot_answer_and_artifacts(user_q, fdf)
+        st.session_state.messages.append({"role": "assistant", "content": out["text"]})
+
         with st.chat_message("assistant"):
-            st.markdown(ans)
+            st.markdown(out["text"])
+            for fig in out.get("figs", []):
+                st.plotly_chart(fig, use_container_width=True)
+            for t in out.get("tables", []):
+                st.dataframe(t, use_container_width=True)
 
 
 # ==========================================================
-# DASHBOARD TAB (charts + thresholds + tables)
+# DASHBOARD TAB (all charts visible normally)
 # ==========================================================
 with tab_dash:
-    st.subheader("Trends (with thresholds)")
+    st.subheader("Dashboard")
 
+    # Trends
+    st.markdown("### Trends (interactive + thresholds)")
     if (not has_date) or ("at_parsed" not in fdf.columns) or fdf["at_parsed"].isna().all():
-        st.info("Trend charts need the `at` column with parseable dates.")
-        trends = None
+        st.warning("No usable `at` column → time trends disabled. (Your Kaggle file should have `at`.)")
+
+        # fallback charts
+        figA = px.histogram(fdf, x="score", nbins=6, title="Score Distribution")
+        st.plotly_chart(figA, use_container_width=True)
+
+        sent = fdf["sentiment"].value_counts().reset_index()
+        sent.columns = ["sentiment", "count"]
+        figB = px.bar(sent, x="sentiment", y="count", title="Sentiment Counts")
+        st.plotly_chart(figB, use_container_width=True)
     else:
-        gran = st.radio("Trend granularity", ["Daily", "Weekly", "Monthly"], horizontal=True)
-        trends = build_trends(fdf, gran)
+        gran = st.radio("Trend granularity", ["Daily", "Weekly", "Monthly"], horizontal=True, key="dash_gran")
+        tr = build_trends(fdf, gran)
+        pack = make_trend_figs(tr, title_prefix=f"({gran}) ")
 
-        if trends:
-            vol = trends["vol"]
-            avg = trends["avg"]
-            share = trends["share"].set_index("period")
+        st.plotly_chart(pack["fig_vol"], use_container_width=True)
+        st.plotly_chart(pack["fig_avg"], use_container_width=True)
+        st.plotly_chart(pack["fig_neg"], use_container_width=True)
 
-            # 1) Volume
-            fig1, ax1 = plt.subplots()
-            ax1.plot(vol["period"], vol["reviews"])
-            ax1.set_title("Review Volume Over Time")
-            ax1.set_xlabel("Date")
-            ax1.set_ylabel("Number of reviews")
-            ax1.tick_params(axis="x", rotation=30)
-            st.pyplot(fig1, clear_figure=True)
-
-            # 2) Avg rating + threshold lines
-            fig2, ax2 = plt.subplots()
-            ax2.plot(avg["period"], avg["avg_score"])
-            ax2.set_title("Average Rating Over Time")
-            ax2.set_xlabel("Date")
-            ax2.set_ylabel("Average score")
-            ax2.set_ylim(0, 5)
-
-            ax2.axhline(thr_healthy, linestyle="--", linewidth=1)
-            ax2.axhline(thr_watch, linestyle="--", linewidth=1)
-            if len(avg) > 0:
-                ax2.text(avg["period"].iloc[0], thr_healthy + 0.02, f"Healthy ≥ {thr_healthy:.1f}", fontsize=9)
-                ax2.text(avg["period"].iloc[0], thr_watch + 0.02, f"Watch ≤ {thr_watch:.1f}", fontsize=9)
-
-            ax2.tick_params(axis="x", rotation=30)
-            st.pyplot(fig2, clear_figure=True)
-
-            # 3) Sentiment share + negative threshold note
-            fig3, ax3 = plt.subplots()
-            ax3.stackplot(
-                share.index,
-                share["negative"],
-                share["neutral"],
-                share["positive"],
-                labels=["negative", "neutral", "positive"],
-            )
-            ax3.set_title("Sentiment Share Over Time")
-            ax3.set_xlabel("Date")
-            ax3.set_ylabel("Share of reviews")
-            ax3.set_ylim(0, 1)
-            ax3.tick_params(axis="x", rotation=30)
-            ax3.legend(loc="upper left")
-            st.pyplot(fig3, clear_figure=True)
-
-            st.caption(f"Note: negative-share alert threshold is set to **{thr_neg_share:.2f}** in the sidebar.")
-
-            # Flagged periods table
-            neg_share = share["negative"].copy()
-            avg_series = avg.set_index("period")["avg_score"].reindex(share.index).ffill().bfill()
-
-            flag_thresh = (avg_series < (thr_watch + 0.5)) | (neg_share > thr_neg_share)
-
-            flag_anom_vol = rolling_z_flags(
-                vol.set_index("period")["reviews"].reindex(share.index).fillna(0),
-                window=z_window,
-                z=z_cutoff,
-            )
-            flag_anom_neg = rolling_z_flags(neg_share, window=z_window, z=z_cutoff)
-
-            flagged = pd.DataFrame({
-                "period": share.index,
-                "avg_score": avg_series.values,
-                "neg_share": neg_share.values,
-                "flag_threshold": flag_thresh.values,
-                "flag_anom_volume": flag_anom_vol.values,
-                "flag_anom_neg_share": flag_anom_neg.values,
-            })
-            flagged["any_flag"] = flagged[
-                ["flag_threshold", "flag_anom_volume", "flag_anom_neg_share"]
-            ].any(axis=1)
-
-            st.subheader("Flagged periods (quick triage)")
-            st.caption("Flags are driven by your threshold sliders + anomaly sensitivity controls.")
-            st.dataframe(flagged[flagged["any_flag"]].sort_values("period", ascending=False), use_container_width=True)
+        st.markdown("### Flagged periods (quick triage)")
+        st.caption("Flags are driven by your threshold sliders + anomaly sensitivity controls.")
+        flagged_show = pack["flagged"][pack["flagged"]["any_flag"]].sort_values("period", ascending=False)
+        st.dataframe(flagged_show, use_container_width=True)
 
     st.divider()
 
     # Version comparison
+    st.markdown("### Version comparison")
     if has_version and fdf["reviewCreatedVersion"].astype(str).str.strip().ne("").any():
-        st.subheader("Version Comparison")
-
         vdf = fdf.copy()
         vdf["reviewCreatedVersion"] = vdf["reviewCreatedVersion"].astype(str).str.strip()
         vdf = vdf[vdf["reviewCreatedVersion"].ne("")]
@@ -585,86 +642,75 @@ with tab_dash:
             .reset_index()
         )
 
-        top_n = st.slider("Show top N versions (by review count)", 5, 30, 10)
+        top_n = st.slider("Show top N versions (by review count)", 5, 30, 12, key="dash_top_n")
         v_agg = v_agg.sort_values("reviews", ascending=False).head(top_n).sort_values("reviewCreatedVersion")
 
-        fig4, ax4 = plt.subplots()
-        ax4.bar(v_agg["reviewCreatedVersion"], v_agg["avg_score"])
-        ax4.set_title("Average Rating by Version")
-        ax4.set_ylim(0, 5)
-        ax4.axhline(thr_healthy, linestyle="--", linewidth=1)
-        ax4.axhline(thr_watch, linestyle="--", linewidth=1)
-        ax4.tick_params(axis="x", rotation=30)
-        st.pyplot(fig4, clear_figure=True)
+        fig_avg_v = px.bar(v_agg, x="reviewCreatedVersion", y="avg_score", title="Average Rating by Version")
+        fig_avg_v.update_layout(yaxis_range=[0, 5])
+        fig_avg_v.add_hline(y=thr_healthy, line_dash="dash", annotation_text=f"Healthy ≥ {thr_healthy:.1f}")
+        fig_avg_v.add_hline(y=thr_watch, line_dash="dash", annotation_text=f"Watch ≤ {thr_watch:.1f}")
+        st.plotly_chart(fig_avg_v, use_container_width=True)
 
-        fig5, ax5 = plt.subplots()
-        ax5.bar(v_agg["reviewCreatedVersion"], v_agg["reviews"])
-        ax5.set_title("Review Volume by Version")
-        ax5.tick_params(axis="x", rotation=30)
-        st.pyplot(fig5, clear_figure=True)
+        fig_neg_v = px.bar(v_agg, x="reviewCreatedVersion", y="neg_share", title="Negative Share by Version")
+        fig_neg_v.update_layout(yaxis_range=[0, 1])
+        fig_neg_v.add_hline(y=thr_neg_share, line_dash="dash", annotation_text=f"Alert > {thr_neg_share:.2f}")
+        st.plotly_chart(fig_neg_v, use_container_width=True)
 
-        fig6, ax6 = plt.subplots()
-        ax6.bar(v_agg["reviewCreatedVersion"], v_agg["neg_share"])
-        ax6.set_title("Negative Share by Version")
-        ax6.set_ylim(0, 1)
-        ax6.axhline(thr_neg_share, linestyle="--", linewidth=1)
-        ax6.tick_params(axis="x", rotation=30)
-        st.pyplot(fig6, clear_figure=True)
+        st.dataframe(v_agg, use_container_width=True)
     else:
-        st.caption("No usable `reviewCreatedVersion` values found for version charts.")
+        st.info("No usable `reviewCreatedVersion` values found.")
 
     st.divider()
 
-    # Topics
-    st.subheader("Negative themes (Topic modeling)")
+    # Themes + Terms
+    st.markdown("### Negative themes (Topic modeling)")
     neg_df = fdf[fdf["sentiment"] == "negative"]
-
     if len(neg_df) < 30:
         st.info("Not enough negative reviews for stable topics (need ~30+). Widen filters.")
     else:
-        n_topics = st.slider("Number of topics", 3, 8, 5)
+        n_topics = st.slider("Number of topics", 3, 8, 5, key="dash_topics")
         topics = nmf_topics(neg_df["content"].astype(str).tolist(), n_topics=n_topics, n_terms=8)
         if not topics:
-            st.info("Could not generate topics (text too sparse).")
+            st.info("Could not generate themes (text too sparse).")
         else:
             rows = [{"Topic": f"Topic {t['topic']}", "Top terms": ", ".join(t["terms"])} for t in topics]
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     st.divider()
 
-    # Terms
+    st.markdown("### Top terms")
     l, r = st.columns(2)
     with l:
-        st.subheader("Top terms in negative reviews (score 1–2)")
+        st.subheader("Top terms in negative reviews")
         neg_terms = top_terms(fdf.loc[fdf["sentiment"] == "negative", "content"], n=15)
-        if neg_terms:
-            st.dataframe(pd.DataFrame(neg_terms, columns=["term", "count"]), use_container_width=True)
-        else:
-            st.info("No negative reviews in this filtered set.")
+        st.dataframe(pd.DataFrame(neg_terms, columns=["term", "count"]), use_container_width=True)
     with r:
-        st.subheader("Top terms in positive reviews (score 4–5)")
+        st.subheader("Top terms in positive reviews")
         pos_terms = top_terms(fdf.loc[fdf["sentiment"] == "positive", "content"], n=15)
-        if pos_terms:
-            st.dataframe(pd.DataFrame(pos_terms, columns=["term", "count"]), use_container_width=True)
-        else:
-            st.info("No positive reviews in this filtered set.")
+        st.dataframe(pd.DataFrame(pos_terms, columns=["term", "count"]), use_container_width=True)
 
     st.divider()
 
-    # Helpful + Samples
     if has_thumbs:
-        st.subheader("Most helpful reviews (by thumbsUpCount)")
+        st.markdown("### Most helpful reviews")
         cols = ["score", "sentiment", "thumbsUpCount", "content"]
-        if has_version: cols.insert(0, "reviewCreatedVersion")
-        if has_date: cols.insert(0, "date")
-        st.dataframe(fdf.sort_values("thumbsUpCount", ascending=False).head(10)[cols], use_container_width=True)
-        st.divider()
+        if has_version:
+            cols.insert(0, "reviewCreatedVersion")
+        if has_date:
+            cols.insert(0, "date")
+        st.dataframe(
+            fdf.sort_values("thumbsUpCount", ascending=False).head(15)[cols],
+            use_container_width=True
+        )
 
-    st.subheader("Samples")
+    st.divider()
+    st.markdown("### Samples")
     col1, col2 = st.columns(2)
     base_cols = ["score", "sentiment", "content"]
-    if has_version: base_cols.insert(0, "reviewCreatedVersion")
-    if has_date: base_cols.insert(0, "date")
+    if has_version:
+        base_cols.insert(0, "reviewCreatedVersion")
+    if has_date:
+        base_cols.insert(0, "date")
 
     with col1:
         st.markdown("**Lowest-score samples**")
