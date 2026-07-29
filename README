@@ -1,1 +1,11 @@
+This chatbot sentiment analysis platform helps survey a bunch of Google Play Store app reviews for various apps and how people found their time using the app through a Kaggle dataset I found. The project evolved from an initial concept into a fully functional analytics platform capable of 
+processing large-scale review datasets, generating meaningful insights, and enabling users to interact with those insights through a conversational interface. That being said, there are still areas to be improved on in terms of the UI as well as the data retrieved and displayed. The system integrates several key components, including sentiment classification, topic modelling using Non-negative Matrix Factorisation (NMF), trend analysis with threshold-based evaluation, anomaly detection using rolling statistical methods, and a chatbot interface designed 
+to interpret user queries. Each of these components was developed incrementally and required careful coordination to ensure they functioned cohesively as part of a unified system. 
 
+One of the defining challenges of the project was managing the interaction between multiple system layers. The user interface (UI), the machine learning pipeline, and the conversational layer each introduced their own complexity, and ensuring seamless communication between them required deliberate architectural decisions. 
+Particular attention was given to modularisation, ensuring that each layer could operate independently while still contributing to the overall functionality of the platform. 
+The Google Play Store Reviews dataset from Kaggle served as the foundation for all analytical work. While the dataset provided a rich source of user feedback, it also introduced challenges such as inconsistent formatting, variation in review quality, and the need to derive structured insights from unstructured textual data. Addressing these challenges required implementing 
+robust preprocessing, feature extraction, and aggregation techniques. During this final reporting period, the focus shifted from feature development to system refinement and validation. 
+
+This included reviewing prompt engineering structures, validating the interaction between LLM-based and rule-based systems, exploring caching and performance 
+optimisations, and ensuring that the end-to-end user experience was stable and intuitive.
