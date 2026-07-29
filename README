@@ -5,7 +5,13 @@ to interpret user queries. Each of these components was developed incrementally 
 One of the defining challenges of the project was managing the interaction between multiple system layers. The user interface (UI), the machine learning pipeline, and the conversational layer each introduced their own complexity, and ensuring seamless communication between them required deliberate architectural decisions. 
 Particular attention was given to modularisation, ensuring that each layer could operate independently while still contributing to the overall functionality of the platform. 
 The Google Play Store Reviews dataset from Kaggle served as the foundation for all analytical work. While the dataset provided a rich source of user feedback, it also introduced challenges such as inconsistent formatting, variation in review quality, and the need to derive structured insights from unstructured textual data. Addressing these challenges required implementing 
-robust preprocessing, feature extraction, and aggregation techniques. During this final reporting period, the focus shifted from feature development to system refinement and validation. 
+robust preprocessing, feature extraction, and aggregation techniques. During this final setup of the application, the focus shifted from feature development to system refinement and validation. 
 
 This included reviewing prompt engineering structures, validating the interaction between LLM-based and rule-based systems, exploring caching and performance 
 optimisations, and ensuring that the end-to-end user experience was stable and intuitive.
+
+Kindly upload the reviews.csv file to the Streamlit link to see how this app works and follow the set of instructions already encoded on the platform.
+
+STREAMLIT LINK: https://chatbot-sentiment-analysis-ebdkghz8rudbcmsshuca5u.streamlit.app/
+
+P.S: In case the app is not up, that may be due to the 24 hr online feature of Streamlit, wherein the app automatically goes to sleep or into hibernation after a period of no interaction within a 12-to-24-hour window. 
